@@ -15,5 +15,10 @@
     },
     "require": {
         "gigablah/fsphinxphp": "1.1.*"
+    },
+    "autoload": {
+        "psr-4": {
+            "nordsoftware\\yii_sphinx\\": "src/"
+        }
     }
 }
