@@ -15,19 +15,49 @@ namespace nordsoftware\yii_sphinx\components;
  * The provider finds active records based on the search result from sphinx.
  * The provider also supports facets that are stored separately from the search result.
  */
-class SphinxDataProvider extends \CActiveDataProvider
+class SphinxDataProvider extends \CDataProvider
 {
     /**
-     * @var string the current index to perform the search on.
+     * @var string the active record class name. The {@link getData()} method will return objects of this class.
+     */
+    public $modelClass;
+
+    /**
+     * @var \CActiveRecord the active record finder instance.
+     */
+    public $model;
+
+    /**
+     * @var string the name of key attribute for {@link modelClass}. If not set, the primary key will be used.
+     */
+    public $keyAttribute = null;
+
+    /**
+     * @var string runtime cache for search index.
      */
     private $_index;
+
+    /**
+     * @var SphinxCriteria runtime cache for search criteria.
+     */
+    private $_criteria;
 
     /**
      * @inheritdoc
      */
     public function __construct($modelClass, $config = array())
     {
-        parent::__construct($modelClass, $config);
+        if (is_string($modelClass)) {
+            $this->modelClass = $modelClass;
+            $this->model = \CActiveRecord::model($this->modelClass);
+        } elseif ($modelClass instanceof \CActiveRecord) {
+            $this->modelClass = get_class($modelClass);
+            $this->model = $modelClass;
+        }
+        $this->setId($this->modelClass);
+        foreach ($config as $key => $value) {
+            $this->$key = $value;
+        }
 
         $index = strtolower($this->modelClass);
         $indices = \Yii::app()->sphinx->indices;
@@ -46,22 +76,31 @@ class SphinxDataProvider extends \CActiveDataProvider
 
         if (($pagination = $this->getPagination()) !== false) {
             $pagination->setItemCount($this->getTotalItemCount());
-            $pagination->applyLimit($criteria);
+            $criteria->limit = $pagination->getLimit();
+            $criteria->offset = $pagination->getOffset();
         }
 
-        /** @var \CSort $sort */
         if (($sort = $this->getSort()) !== false) {
-            foreach ($sort->getDirections() as $attributeName => $order) {
-                $criteria->applyOrder($attributeName, ($order === \CSort::SORT_ASC) ? 'asc' : 'desc');
+            foreach ($sort->getDirections() as $attribute => $order) {
+                $mode = ($order === \CSort::SORT_ASC) ? 'asc' : 'desc';
+                $criteria->order = empty($criteria->order) ? "{$attribute} {$mode}" : ", {$attribute} {$mode}";
             }
         }
 
         $result = \Yii::app()->sphinx->query($criteria, $this->_index);
+        $data = array();
 
-        // todo: load active records based on result
-        // todo: handle facets
+        if (!empty($result['matches'])) {
+            $modelIds = array();
+            foreach ($result['matches'] as $modelId => $match) {
+                $modelIds[] = $modelId;
+            }
+            $criteria = new \CDbCriteria;
+            $criteria->order = 'FIELD(id, ' . implode(',', $modelIds) . ')';
+            $data = $this->model->findAllByPk($modelIds, $criteria);
+        }
 
-        return array();
+        return $data;
     }
 
     /**
@@ -69,7 +108,15 @@ class SphinxDataProvider extends \CActiveDataProvider
      */
     protected function fetchKeys()
     {
-        // TODO: Implement fetchKeys() method.
+        $keys = array();
+        foreach ($this->getData() as $i => $data) {
+            if (!($data instanceof \CActiveRecord)) {
+                throw new \CException('Provider contains data of invalid type.');
+            }
+            $key = $this->keyAttribute === null ? $data->getPrimaryKey() : $data->{$this->keyAttribute};
+            $keys[$i] = is_array($key) ? implode(',', $key) : $key;
+        }
+        return $keys;
     }
 
     /**
@@ -77,6 +124,31 @@ class SphinxDataProvider extends \CActiveDataProvider
      */
     protected function calculateTotalItemCount()
     {
-        // TODO: Implement calculateTotalItemCount() method.
+        $result = \Yii::app()->sphinx->query($this->getCriteria(), $this->_index);
+        if (!isset($result['total_found'])) {
+            throw new \CException(sprintf('Sphinx did not return a total found item count.'));
+        }
+        return (int)$result['total_found'];
+    }
+
+    /**
+     * Getter for the search criteria.
+     * @return SphinxCriteria
+     */
+    protected function getCriteria()
+    {
+        if ($this->_criteria !== null) {
+            return $this->_criteria;
+        }
+        return $this->_criteria = new SphinxCriteria();
+    }
+
+    /**
+     * Setter for the search criteria.
+     * @param mixed
+     */
+    public function setCriteria($value)
+    {
+        $this->_criteria = ($value instanceof SphinxCriteria) ? $value : new SphinxCriteria($value);
     }
 }
